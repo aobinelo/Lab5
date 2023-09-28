@@ -1,0 +1,253 @@
+---
+title: "Lab 5"
+author: Adaeze Obinelo
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+---
+
+```{r}
+
+met_url <- "https://github.com/USCbiostats/data-science-data/raw/master/02_met/met_all.gz"
+
+met_url <- "https://github.com/USCbiostats/data-science-data/raw/master/02_met/met_all.gz"
+tmp <- "met.gz"
+if (!file.exists(tmp)) {
+  download.file(
+    url      = met_url,
+    destfile = tmp,
+    # method   = "libcurl", timeout = 1000 (you may need this option)
+  )
+}
+```
+
+## Steps 1 and 2
+
+```{r}
+
+library(tidyverse)
+library(dplyr)
+library(data.table)
+dat <- fread(tmp)
+head(dat)
+
+
+
+stations <- fread("ftp://ftp.ncdc.noaa.gov/pub/data/noaa/isd-history.csv")
+stations[, USAF := as.integer(USAF)]
+
+
+stations[, USAF   := fifelse(USAF == 999999, NA_integer_, USAF)]
+stations[, CTRY   := fifelse(CTRY == "", NA_character_, CTRY)]
+stations[, STATE  := fifelse(STATE == "", NA_character_, STATE)]
+
+
+stations <- unique(stations[, list(USAF, CTRY, STATE)])
+
+
+stations <- stations[!is.na(USAF)]
+
+
+stations[, n := 1:.N, by = .(USAF)]
+stations <- stations[n == 1,][, n := NULL]
+
+
+```
+
+## Step 3
+
+```{r}
+
+data <- merge(
+  x     = dat,      
+  y     = stations, 
+  by.x  = "USAFID",
+  by.y  = "USAF", 
+  all.x = TRUE,      
+  all.y = FALSE
+  ) 
+```
+
+## Q1
+
+```{r}
+
+data <- data[!is.na(temp)]
+data <- data[!is.na(wind.sp)]
+data <- data[!is.na(atm.press)]
+
+temp_median <- data %>% 
+  summarise(Site = USAFID, quantile(temp, 0.5))
+
+wind_median <- data %>% 
+  summarise(Site = USAFID, quantile(wind.sp, 0.5))
+
+atm_median <- data %>% 
+  summarise(Site = USAFID, quantile(atm.press, 0.5))
+
+head(temp_median %>% 
+  distinct(Site, .keep_all = TRUE))
+
+head(wind_median %>% 
+  distinct(Site, .keep_all = TRUE))
+
+head(atm_median %>% 
+  distinct(Site, .keep_all = TRUE))
+```
+
+Yes, the sites of the median temp, wind speed and atmospheric pressure coincide, Site 690150, 72017 and 720198 are among the medians for all three variables
+
+## Q2
+
+```{r}
+
+matrix <- select(data, USAFID, temp, wind.sp, atm.press, STATE, lat, lon)
+
+matrix <- filter(matrix, !is.na(temp),!is.na(USAFID),!is.na(STATE), !is.na(wind.sp), !is.na(atm.press), !is.na(lat), !is.na(lon))
+
+
+matrix <- mutate(matrix,
+                 euclid = (temp + wind.sp + atm.press) / 3 )
+
+euclids <- matrix %>% 
+  group_by(STATE) %>% 
+  slice_min(order_by = euclid)
+  
+euclids %>% 
+  group_by(STATE) %>% 
+  summarise(Count = n_distinct(USAFID))
+
+
+```
+
+a few states have 2 observations --\> get rid of one below:
+
+```{r}
+euclids <- euclids %>% 
+  group_by(STATE) %>% 
+  slice_min(order_by = lat)
+
+euclids <- euclids %>% distinct(USAFID, .keep_all = TRUE)
+
+euclids %>% 
+  group_by(STATE, USAFID) %>% 
+  summarise(min(euclid))
+```
+
+These represent the most representative sites in each state via euclid distance
+
+Note that 4 states do not have data in this dataset (Total 46 States)
+
+## Q3 
+
+For each state, identify what is the station that is closest to the mid-point of the state. Combining these with the stations you identified in the previous question, use `leaflet()` to visualize all \~100 points in the same figure, applying different colors for those identified in this question.
+
+```{r}
+library(readxl)
+midpoints=read_excel('midpoints.xlsx')
+
+midpoints <- select(midpoints, state, latitude, longitude)
+
+names(midpoints)[names(midpoints)== "state"] <- "STATE"
+names(midpoints)[names(midpoints)== "latitude"] <- "latmid"
+names(midpoints)[names(midpoints)== "longitude"] <- "lonmid"
+
+matrix3 <- matrix %>% 
+  select(STATE, lat, lon, USAFID)
+
+geomid <- merge(midpoints, matrix3, by= 'STATE')
+
+geomid <- mutate(geomid,
+       dist_mid = sqrt(((lat-latmid) * (lat - latmid)) + ((lon - lonmid) * (lon - lonmid)))) 
+
+closest <- geomid %>% 
+  group_by(STATE) %>% 
+  slice_min(order_by = dist_mid)
+
+closest <- closest %>% distinct(USAFID, .keep_all = TRUE)
+
+
+```
+
+```{r}
+library(leaflet)
+
+pal <- colorFactor(palette = 'blue',
+                   domain = closest$USAFID)
+pal2 <- colorFactor(palette = 'red',
+                   domain = euclids$USAFID)
+
+leaflet() %>% 
+  addProviderTiles('CartoDB.Positron') %>% 
+  addCircles(data=closest, lat = ~lat, lng = ~lon, opacity = 1, fillOpacity = 1, radius = 40) %>%
+  addCircles(data=euclids, lat= ~lat, lng = ~lon, color = "red",opacity = 1, fillOpacity = 1, radius = 40)
+  
+
+  
+
+```
+
+Red dots indicate sites most representative in terms of median temp, atm press and wind speed
+
+Blue dots indicate sites closest to geographical center of each state
+
+## Q4 
+
+```{r}
+statematrix <- group_by(matrix, STATE, temp)
+
+av_state <- statematrix %>% group_by(STATE) %>% 
+  summarise(mean_temp = mean(temp),
+            .groups = 'drop')
+
+statewind <- statematrix %>% group_by(STATE) %>% 
+  summarise(mean_wind = mean(wind.sp),
+            .groups = 'drop')
+
+statepress <- statematrix %>% group_by(STATE) %>% 
+  summarise(mean_atm = mean(atm.press),
+            .groups = 'drop')
+
+av_state$temp_cat <- as.factor(ifelse(av_state$mean_temp<20, 'low',
+                                ifelse(av_state$mean_temp<25, 'mid', 'high')))
+ 
+av_state
+
+statepress
+
+statewind
+```
+
+Record Counts and NA record temp counts
+
+```{r}
+data %>% 
+  group_by(STATE) %>% 
+  summarise(Records = n_distinct(temp))
+
+data %>% 
+  group_by(STATE) %>% 
+  summarise(Records = sum(is.na(temp)))
+
+data %>% 
+  summarise(States = n_distinct(temp))
+```
+
+Station Counts
+
+```{r}
+data %>% 
+  group_by(STATE) %>% 
+  summarise(Records = n_distinct(USAFID))
+
+data %>% 
+  summarise(States = n_distinct(USAFID))
+```
+
+States Included:
+
+```{r}
+data %>% 
+  summarise(States = n_distinct(STATE))
+```
